@@ -1,0 +1,6 @@
+.env
+service_account*.json
+fe-source/node_modules/
+__pycache__/
+*.pyc
+.DS_Store

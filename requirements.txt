@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+pymongo
+pydantic
+langchain
+langchain-core
+langgraph
+langgraph-supervisor
+google-cloud-aiplatform

@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Realtime STT - Google Cloud Streaming</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    button { margin-right: 8px; }
+    pre { padding: 12px; border: 1px solid #ddd; height: 260px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h3>Realtime STT (Google Cloud Speech)</h3>
+  <label>Lang: <input id="lang" value="en-US" /></label>
+  <div style="margin: 12px 0;">
+    <button id="start">Start</button>
+    <button id="stop">Stop</button>
+  </div>
+
+  <div><b>Interim:</b> <span id="interim"></span></div>
+  <div style="margin-top:8px;"><b>Full transcript:</b> <span id="full"></span></div>
+  <div style="margin-top:8px;"><b>Final log:</b></div>
+  <pre id="log"></pre>
+
+<script>
+let ws, audioCtx, source, processor, stream;
+
+const interimEl = document.getElementById("interim");
+const fullEl = document.getElementById("full");
+const logEl = document.getElementById("log");
+function log(line){ logEl.textContent += line + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+
+let finalText = "";
+
+function floatTo16BitPCM(float32) {
+  const out = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]));
+    out[i] = s < 0 ? (s * 0x8000) : (s * 0x7FFF);
+  }
+  return out;
+}
+
+function downsampleBuffer(buffer, inRate, outRate) {
+  if (outRate === inRate) return buffer;
+  const ratio = inRate / outRate;
+  const newLen = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLen);
+
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let sum = 0, count = 0;
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+      sum += buffer[i];
+      count++;
+    }
+    result[offsetResult] = sum / count;
+    offsetResult++;
+    offsetBuffer = nextOffsetBuffer;
+  }
+  return result;
+}
+
+async function start() {
+  // Reset
+  finalText = "";
+  interimEl.textContent = "";
+  fullEl.textContent = "";
+  log("---- START ----");
+
+  const lang = document.getElementById("lang").value || "en-US";
+  ws = new WebSocket("ws://localhost:7860/ws/stt");
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = async () => {
+    log("WS connected");
+    ws.send(JSON.stringify({ type: "start", lang }));
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    });
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    source = audioCtx.createMediaStreamSource(stream);
+
+    // smaller buffer => less "chunky", less drop
+    processor = audioCtx.createScriptProcessor(2048, 1, 1);
+
+    processor.onaudioprocess = (e) => {
+      if (!ws || ws.readyState !== 1) return;
+
+      const input = e.inputBuffer.getChannelData(0);
+      const down = downsampleBuffer(input, audioCtx.sampleRate, 16000);
+      const pcm16 = floatTo16BitPCM(down);
+
+      ws.send(pcm16.buffer);
+    };
+
+    source.connect(processor);
+    // do not connect to destination to avoid echo
+    // processor.connect(audioCtx.destination);
+
+    log("Mic streaming...");
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "result") {
+        if (msg.is_final) {
+          if (msg.transcript && msg.transcript.trim()) {
+            finalText += (finalText ? " " : "") + msg.transcript.trim();
+          }
+          interimEl.textContent = "";
+          fullEl.textContent = finalText;
+          log("[FINAL] " + msg.transcript);
+        } else {
+          const interim = msg.transcript ? msg.transcript.trim() : "";
+          interimEl.textContent = interim;
+
+          fullEl.textContent = interim
+            ? (finalText ? finalText + " " + interim : interim)
+            : finalText;
+        }
+      } else if (msg.type === "error") {
+        log("[ERROR] " + msg.message);
+      } else {
+        log("[MSG] " + e.data);
+      }
+    } catch {
+      log("[RAW] " + e.data);
+    }
+  };
+
+  ws.onclose = () => log("WS closed");
+}
+
+async function stop() {
+  log("---- STOP ----");
+  try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "stop" })); } catch {}
+  try { if (processor) processor.disconnect(); } catch {}
+  try { if (source) source.disconnect(); } catch {}
+  try { if (audioCtx) await audioCtx.close(); } catch {}
+  try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch {}
+  try { if (ws) ws.close(); } catch {}
+  ws = null;
+  log("Stopped");
+}
+
+window.addEventListener("DOMContentLoaded", () => {
+  const startBtn = document.getElementById("start");
+  const stopBtn = document.getElementById("stop");
+
+  if (!startBtn || !stopBtn) {
+    console.error("Missing #start or #stop button in HTML");
+    return;
+  }
+
+  startBtn.onclick = start;
+  stopBtn.onclick = stop;
+});
+</script>
+</body>
+</html>
