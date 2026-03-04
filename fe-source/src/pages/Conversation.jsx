@@ -457,7 +457,7 @@ export default function Conversation() {
     if (!SpeechRecognition) return;
 
     const recog = new SpeechRecognition();
-    recog.lang = "en-US";
+    recog.lang = "en-EN";
     recog.interimResults = true;
     recog.continuous = true;
     recog.maxAlternatives = 1;
